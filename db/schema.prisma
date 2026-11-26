@@ -1,0 +1,558 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model audit_logs {
+  id         BigInt   @id @default(autoincrement())
+  actor_id   String?  @db.Uuid
+  action     String   @db.VarChar(80)
+  entity     String   @db.VarChar(60)
+  entity_id  String?  @db.Uuid
+  metadata   Json     @default("{}")
+  ip         String?  @db.Inet
+  created_at DateTime @default(now()) @db.Timestamptz(6)
+  users      users?   @relation(fields: [actor_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([entity, entity_id], map: "idx_audit_entity")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model contributions {
+  id             String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  round_id       String         @db.Uuid
+  member_id      String         @db.Uuid
+  amount         BigInt
+  penalty_amount BigInt         @default(0)
+  status         contrib_status @default(pending)
+  due_date       DateTime       @db.Date
+  paid_at        DateTime?      @db.Timestamptz(6)
+  group_members  group_members  @relation(fields: [member_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  rounds         rounds         @relation(fields: [round_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  payments       payments[]
+
+  @@unique([round_id, member_id])
+  @@index([status, due_date], map: "idx_contrib_status")
+}
+
+model cycles {
+  id           String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  group_id     String       @db.Uuid
+  cycle_number Int
+  start_date   DateTime     @db.Date
+  end_date     DateTime?    @db.Date
+  status       cycle_status @default(planned)
+  draw_seed    String?
+  drawn_at     DateTime?    @db.Timestamptz(6)
+  groups       groups       @relation(fields: [group_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  rounds       rounds[]
+
+  @@unique([group_id, cycle_number])
+}
+
+model disputes {
+  id                                String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  group_id                          String         @db.Uuid
+  round_id                          String?        @db.Uuid
+  payment_id                        String?        @db.Uuid
+  opened_by                         String         @db.Uuid
+  subject                           String         @db.VarChar(190)
+  description                       String
+  attachments                       Json           @default("[]")
+  status                            dispute_status @default(open)
+  resolution                        String?
+  resolved_by                       String?        @db.Uuid
+  created_at                        DateTime       @default(now()) @db.Timestamptz(6)
+  resolved_at                       DateTime?      @db.Timestamptz(6)
+  groups                            groups         @relation(fields: [group_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users_disputes_opened_byTousers   users          @relation("disputes_opened_byTousers", fields: [opened_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  payments                          payments?      @relation(fields: [payment_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users_disputes_resolved_byTousers users?         @relation("disputes_resolved_byTousers", fields: [resolved_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  rounds                            rounds?        @relation(fields: [round_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model escrow_accounts {
+  id                String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  group_id          String           @unique @db.Uuid
+  currency          String           @default("XAF") @db.Char(3)
+  balance_cached    BigInt           @default(0)
+  guarantee_balance BigInt           @default(0)
+  updated_at        DateTime         @default(now()) @db.Timestamptz(6)
+  groups            groups           @relation(fields: [group_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  ledger_entries    ledger_entries[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model group_members {
+  id                                     String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  group_id                               String          @db.Uuid
+  user_id                                String          @db.Uuid
+  role                                   group_role      @default(member)
+  status                                 member_status   @default(pending)
+  position                               Int?
+  shares                                 Int             @default(1)
+  risk_flag                              Boolean         @default(false)
+  rules_accepted_at                      DateTime?       @db.Timestamptz(6)
+  invited_by                             String?         @db.Uuid
+  approved_by                            String?         @db.Uuid
+  joined_at                              DateTime?       @db.Timestamptz(6)
+  left_at                                DateTime?       @db.Timestamptz(6)
+  contributions                          contributions[]
+  users_group_members_approved_byTousers users?          @relation("group_members_approved_byTousers", fields: [approved_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  groups                                 groups          @relation(fields: [group_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  users_group_members_invited_byTousers  users?          @relation("group_members_invited_byTousers", fields: [invited_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users_group_members_user_idTousers     users           @relation("group_members_user_idTousers", fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  member_debts                           member_debts[]
+  payouts                                payouts[]
+  rounds                                 rounds[]
+
+  @@unique([group_id, position])
+  @@unique([group_id, user_id])
+  @@index([user_id], map: "idx_gm_user")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model groups {
+  id                      String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  name                    String           @db.VarChar(150)
+  description             String?
+  rules_text              String?
+  contribution_amount     BigInt
+  currency                String           @default("XAF") @db.Char(3)
+  frequency               frequency_type
+  payment_deadline_days   Int              @default(2)
+  start_date              DateTime         @db.Date
+  min_members             Int              @default(10)
+  max_members             Int              @default(100)
+  payout_rule             payout_rule      @default(flexible)
+  beneficiary_pays        Boolean          @default(true)
+  late_fee_type           fee_type         @default(fixed)
+  late_fee_value          BigInt           @default(0)
+  platform_fee_type       fee_type         @default(percent)
+  platform_fee_value      BigInt           @default(0)
+  order_mode              order_mode       @default(random)
+  dual_approval_threshold BigInt?
+  invite_code             String           @unique @db.VarChar(12)
+  status                  group_status     @default(draft)
+  launched_at             DateTime?        @db.Timestamptz(6)
+  created_by              String           @db.Uuid
+  created_at              DateTime         @default(now()) @db.Timestamptz(6)
+  updated_at              DateTime         @default(now()) @db.Timestamptz(6)
+  cycles                  cycles[]
+  disputes                disputes[]
+  escrow_accounts         escrow_accounts?
+  group_members           group_members[]
+  users                   users            @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  invitations             invitations[]
+  rounds                  rounds[]
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model invitations {
+  id         String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  group_id   String        @db.Uuid
+  phone      String?       @db.VarChar(20)
+  email      String?       @db.VarChar(190)
+  token_hash String
+  role       group_role    @default(member)
+  status     invite_status @default(pending)
+  expires_at DateTime      @db.Timestamptz(6)
+  created_by String        @db.Uuid
+  created_at DateTime      @default(now()) @db.Timestamptz(6)
+  users      users         @relation(fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  groups     groups        @relation(fields: [group_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model ledger_entries {
+  id                String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  escrow_account_id String          @db.Uuid
+  round_id          String?         @db.Uuid
+  type              ledger_type
+  debit             BigInt          @default(0)
+  credit            BigInt          @default(0)
+  reference_table   String?         @db.VarChar(40)
+  reference_id      String?         @db.Uuid
+  description       String?
+  created_at        DateTime        @default(now()) @db.Timestamptz(6)
+  escrow_accounts   escrow_accounts @relation(fields: [escrow_account_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  rounds            rounds?         @relation(fields: [round_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([escrow_account_id, created_at], map: "idx_ledger_escrow")
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model member_debts {
+  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  member_id     String        @db.Uuid
+  round_id      String?       @db.Uuid
+  amount        BigInt
+  settled       BigInt        @default(0)
+  status        String        @default("open") @db.VarChar(20)
+  created_at    DateTime      @default(now()) @db.Timestamptz(6)
+  group_members group_members @relation(fields: [member_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  rounds        rounds?       @relation(fields: [round_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model notifications {
+  id         String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String       @db.Uuid
+  channel    channel_type
+  template   String       @db.VarChar(60)
+  payload    Json         @default("{}")
+  status     notif_status @default(queued)
+  sent_at    DateTime?    @db.Timestamptz(6)
+  read_at    DateTime?    @db.Timestamptz(6)
+  created_at DateTime     @default(now()) @db.Timestamptz(6)
+  users      users        @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@index([user_id, created_at(sort: Desc)], map: "idx_notif_user")
+}
+
+model otp_codes {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String?   @db.Uuid
+  target     String    @db.VarChar(190)
+  purpose    String    @db.VarChar(40)
+  code_hash  String
+  attempts   Int       @default(0)
+  expires_at DateTime  @db.Timestamptz(6)
+  used_at    DateTime? @db.Timestamptz(6)
+  created_at DateTime  @default(now()) @db.Timestamptz(6)
+  users      users?    @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+/// This table contains check constraints and requires additional setup for migrations. Visit https://pris.ly/d/check-constraints for more info.
+model payments {
+  id                 String         @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  contribution_id    String         @db.Uuid
+  user_id            String         @db.Uuid
+  provider           String         @db.VarChar(40)
+  provider_reference String?        @unique @db.VarChar(120)
+  method             account_type?
+  payer_number       String?        @db.VarChar(40)
+  amount             BigInt
+  provider_fee       BigInt         @default(0)
+  status             payment_status @default(initiated)
+  idempotency_key    String         @unique @db.VarChar(80)
+  failure_reason     String?
+  raw_webhook        Json?
+  receipt_number     String?        @unique @db.VarChar(30)
+  created_at         DateTime       @default(now()) @db.Timestamptz(6)
+  confirmed_at       DateTime?      @db.Timestamptz(6)
+  disputes           disputes[]
+  contributions      contributions  @relation(fields: [contribution_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users              users          @relation(fields: [user_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+
+  @@index([contribution_id], map: "idx_payments_contrib")
+}
+
+model payout_accounts {
+  id             String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id        String       @db.Uuid
+  type           account_type
+  account_number String       @db.VarChar(40)
+  holder_name    String       @db.VarChar(150)
+  is_default     Boolean      @default(false)
+  verified_at    DateTime?    @db.Timestamptz(6)
+  active_from    DateTime     @default(dbgenerated("(now() + '24:00:00'::interval)")) @db.Timestamptz(6)
+  created_at     DateTime     @default(now()) @db.Timestamptz(6)
+  users          users        @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  payouts        payouts[]
+
+  @@unique([user_id, type, account_number])
+}
+
+model payouts {
+  id                                      String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  round_id                                String          @db.Uuid
+  beneficiary_member_id                   String          @db.Uuid
+  destination_account_id                  String          @db.Uuid
+  gross_amount                            BigInt
+  platform_fee                            BigInt          @default(0)
+  provider_fee                            BigInt          @default(0)
+  net_amount                              BigInt
+  status                                  payout_status   @default(pending_approval)
+  requested_by                            String?         @db.Uuid
+  approved_by                             String?         @db.Uuid
+  second_approved_by                      String?         @db.Uuid
+  provider_reference                      String?         @unique @db.VarChar(120)
+  idempotency_key                         String          @unique @db.VarChar(80)
+  attempts                                Int             @default(0)
+  failure_reason                          String?
+  executed_at                             DateTime?       @db.Timestamptz(6)
+  created_at                              DateTime        @default(now()) @db.Timestamptz(6)
+  users_payouts_approved_byTousers        users?          @relation("payouts_approved_byTousers", fields: [approved_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  group_members                           group_members   @relation(fields: [beneficiary_member_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  payout_accounts                         payout_accounts @relation(fields: [destination_account_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users_payouts_requested_byTousers       users?          @relation("payouts_requested_byTousers", fields: [requested_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  rounds                                  rounds          @relation(fields: [round_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  users_payouts_second_approved_byTousers users?          @relation("payouts_second_approved_byTousers", fields: [second_approved_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model platform_settings {
+  key        String   @id @db.VarChar(80)
+  value      Json
+  updated_by String?  @db.Uuid
+  updated_at DateTime @default(now()) @db.Timestamptz(6)
+  users      users?   @relation(fields: [updated_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+}
+
+model reconciliations {
+  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  run_date       DateTime @unique @db.Date
+  ledger_total   BigInt
+  provider_total BigInt
+  difference     BigInt
+  status         String   @db.VarChar(20)
+  details        Json?
+  created_at     DateTime @default(now()) @db.Timestamptz(6)
+}
+
+model refresh_tokens {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id    String    @db.Uuid
+  token_hash String
+  expires_at DateTime  @db.Timestamptz(6)
+  revoked_at DateTime? @db.Timestamptz(6)
+  user_agent String?
+  ip         String?   @db.Inet
+  created_at DateTime  @default(now()) @db.Timestamptz(6)
+  users      users     @relation(fields: [user_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+}
+
+model rounds {
+  id                    String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  cycle_id              String           @db.Uuid
+  group_id              String           @db.Uuid
+  round_number          Int
+  beneficiary_member_id String           @db.Uuid
+  opens_on              DateTime         @db.Date
+  due_date              DateTime         @db.Date
+  payout_date           DateTime         @db.Date
+  expected_amount       BigInt
+  collected_amount      BigInt           @default(0)
+  status                round_status     @default(scheduled)
+  closed_at             DateTime?        @db.Timestamptz(6)
+  contributions         contributions[]
+  disputes              disputes[]
+  ledger_entries        ledger_entries[]
+  member_debts          member_debts[]
+  payouts               payouts[]
+  group_members         group_members    @relation(fields: [beneficiary_member_id], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  cycles                cycles           @relation(fields: [cycle_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+  groups                groups           @relation(fields: [group_id], references: [id], onDelete: Cascade, onUpdate: NoAction)
+
+  @@unique([cycle_id, beneficiary_member_id])
+  @@unique([cycle_id, round_number])
+  @@index([status, payout_date], map: "idx_rounds_status_date")
+}
+
+model users {
+  id                                             String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  full_name                                      String              @db.VarChar(150)
+  phone                                          String              @unique @db.VarChar(20)
+  email                                          String?             @unique @db.VarChar(190)
+  password_hash                                  String?
+  platform_role                                  platform_role       @default(user)
+  status                                         user_status         @default(pending)
+  phone_verified_at                              DateTime?           @db.Timestamptz(6)
+  email_verified_at                              DateTime?           @db.Timestamptz(6)
+  kyc                                            kyc_status          @default(none)
+  id_document_url                                String?
+  two_fa_enabled                                 Boolean             @default(false)
+  two_fa_secret                                  String?
+  failed_logins                                  Int                 @default(0)
+  locked_until                                   DateTime?           @db.Timestamptz(6)
+  created_by                                     String?             @db.Uuid
+  created_at                                     DateTime            @default(now()) @db.Timestamptz(6)
+  updated_at                                     DateTime            @default(now()) @db.Timestamptz(6)
+  audit_logs                                     audit_logs[]
+  disputes_disputes_opened_byTousers             disputes[]          @relation("disputes_opened_byTousers")
+  disputes_disputes_resolved_byTousers           disputes[]          @relation("disputes_resolved_byTousers")
+  group_members_group_members_approved_byTousers group_members[]     @relation("group_members_approved_byTousers")
+  group_members_group_members_invited_byTousers  group_members[]     @relation("group_members_invited_byTousers")
+  group_members_group_members_user_idTousers     group_members[]     @relation("group_members_user_idTousers")
+  groups                                         groups[]
+  invitations                                    invitations[]
+  notifications                                  notifications[]
+  otp_codes                                      otp_codes[]
+  payments                                       payments[]
+  payout_accounts                                payout_accounts[]
+  payouts_payouts_approved_byTousers             payouts[]           @relation("payouts_approved_byTousers")
+  payouts_payouts_requested_byTousers            payouts[]           @relation("payouts_requested_byTousers")
+  payouts_payouts_second_approved_byTousers      payouts[]           @relation("payouts_second_approved_byTousers")
+  platform_settings                              platform_settings[]
+  refresh_tokens                                 refresh_tokens[]
+  users                                          users?              @relation("usersTousers", fields: [created_by], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  other_users                                    users[]             @relation("usersTousers")
+}
+
+model webhook_events {
+  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  provider     String    @db.VarChar(40)
+  event_id     String    @db.VarChar(120)
+  payload      Json
+  signature_ok Boolean
+  processed_at DateTime? @db.Timestamptz(6)
+  received_at  DateTime  @default(now()) @db.Timestamptz(6)
+
+  @@unique([provider, event_id])
+}
+
+enum account_type {
+  mtn_momo
+  orange_money
+  bank
+}
+
+enum channel_type {
+  sms
+  email
+  push
+  whatsapp
+  in_app
+}
+
+enum contrib_status {
+  pending
+  paid
+  late
+  failed
+  refunded
+  waived
+}
+
+enum cycle_status {
+  planned
+  running
+  completed
+}
+
+enum dispute_status {
+  open
+  in_review
+  resolved
+  rejected
+}
+
+enum fee_type {
+  fixed
+  percent
+}
+
+enum frequency_type {
+  weekly
+  biweekly
+  monthly
+}
+
+enum group_role {
+  president
+  treasurer
+  member
+  observer
+}
+
+enum group_status {
+  draft
+  recruiting
+  active
+  completed
+  cancelled
+}
+
+enum invite_status {
+  pending
+  accepted
+  expired
+  revoked
+}
+
+enum kyc_status {
+  none
+  submitted
+  verified
+  rejected
+}
+
+enum ledger_type {
+  contribution
+  penalty
+  payout
+  platform_fee
+  provider_fee
+  refund
+  guarantee_in
+  guarantee_out
+  adjustment
+}
+
+enum member_status {
+  invited
+  pending
+  active
+  suspended
+  left
+}
+
+enum notif_status {
+  queued
+  sent
+  failed
+  read
+}
+
+enum order_mode {
+  random
+  manual
+}
+
+enum payment_status {
+  initiated
+  pending
+  confirmed
+  failed
+  refunded
+}
+
+enum payout_rule {
+  strict
+  flexible
+}
+
+enum payout_status {
+  pending_approval
+  approved
+  processing
+  success
+  failed
+  cancelled
+}
+
+enum platform_role {
+  user
+  super_admin
+}
+
+enum round_status {
+  scheduled
+  open
+  collecting
+  ready
+  paid_out
+  failed
+  cancelled
+}
+
+enum user_status {
+  pending
+  active
+  suspended
+  closed
+}

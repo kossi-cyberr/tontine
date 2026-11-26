@@ -1,0 +1,973 @@
+openapi: 3.0.3
+info:
+  title: API Plateforme Tontine
+  version: 1.0.0
+  description: |
+    API REST de la plateforme de tontine en ligne.
+    Montants en XAF (entiers). Dates ISO 8601. Authentification Bearer JWT.
+servers:
+  - url: https://api.exemple-tontine.cm/v1
+    description: Production
+  - url: https://staging-api.exemple-tontine.cm/v1
+    description: Staging (sandbox paiements)
+security:
+  - bearerAuth: []
+tags:
+  - name: Auth
+  - name: Users
+  - name: Groups
+  - name: Members
+  - name: Rounds
+  - name: Payments
+  - name: Escrow
+  - name: Payouts
+  - name: Disputes
+  - name: Admin
+  - name: Webhooks
+
+paths:
+  /auth/register:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Inscription d'un membre (auto-inscription)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RegisterRequest' }
+      responses:
+        '201': { description: Compte créé, OTP envoyé }
+        '409': { $ref: '#/components/responses/Conflict' }
+        '422': { $ref: '#/components/responses/Validation' }
+  /auth/verify-otp:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Vérifier un code OTP
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [target, purpose, code]
+              properties:
+                target: { type: string }
+                purpose:
+                  { type: string, enum: [register, login, reset, payout_account, payout_approval] }
+                code: { type: string, minLength: 6, maxLength: 6 }
+      responses:
+        '200': { description: Code valide }
+        '400': { description: Code invalide ou expiré }
+  /auth/activate:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Activer un compte créé par un président (définir le mot de passe)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [token, password]
+              properties:
+                token: { type: string }
+                password: { type: string, format: password, minLength: 8 }
+      responses:
+        '200': { description: Compte activé }
+  /auth/login:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Connexion
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier, password]
+              properties:
+                identifier: { type: string, description: Téléphone ou email }
+                password: { type: string, format: password }
+                totp_code: { type: string }
+      responses:
+        '200':
+          description: Jetons émis
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '423': { description: Compte verrouillé temporairement }
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Renouveler le jeton d'accès
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        '200':
+          description: Nouveaux jetons
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Déconnexion (révoque le refresh token)
+      responses:
+        '204': { description: OK }
+  /auth/forgot-password:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Demande de réinitialisation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier]
+              properties:
+                identifier: { type: string }
+      responses:
+        '202': { description: OTP envoyé si le compte existe }
+  /auth/reset-password:
+    post:
+      tags: [Auth]
+      security: []
+      summary: Définir un nouveau mot de passe
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier, code, new_password]
+              properties:
+                identifier: { type: string }
+                code: { type: string }
+                new_password: { type: string, format: password }
+      responses:
+        '200': { description: Mot de passe changé }
+  /auth/2fa/enable:
+    post:
+      tags: [Auth]
+      summary: Activer la double authentification (TOTP)
+      responses:
+        '200':
+          description: Secret et QR code
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  secret: { type: string }
+                  otpauth_url: { type: string }
+
+  /me:
+    get:
+      tags: [Users]
+      summary: Mon profil
+      responses:
+        '200':
+          description: Profil
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/User' }
+    patch:
+      tags: [Users]
+      summary: Modifier mon profil
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                full_name: { type: string }
+                email: { type: string, format: email }
+      responses:
+        '200': { description: Profil mis à jour }
+  /me/kyc:
+    post:
+      tags: [Users]
+      summary: Soumettre la pièce d'identité
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                document: { type: string, format: binary }
+      responses:
+        '202': { description: En cours de vérification }
+  /me/payout-accounts:
+    get:
+      tags: [Users]
+      summary: Mes comptes de réception
+      responses:
+        '200':
+          description: Liste
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/PayoutAccount' }
+    post:
+      tags: [Users]
+      summary: Ajouter un compte de réception (OTP requis, activation différée de 24 h)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PayoutAccountInput' }
+      responses:
+        '201': { description: Créé }
+
+  /groups:
+    get:
+      tags: [Groups]
+      summary: Mes groupes
+      responses:
+        '200':
+          description: Liste
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Group' }
+    post:
+      tags: [Groups]
+      summary: Créer un groupe (devient président)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GroupInput' }
+      responses:
+        '201':
+          description: Groupe créé
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Group' }
+  /groups/{groupId}:
+    parameters:
+      - $ref: '#/components/parameters/groupId'
+    get:
+      tags: [Groups]
+      summary: Détail d'un groupe
+      responses:
+        '200':
+          description: Groupe
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Group' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+    patch:
+      tags: [Groups]
+      summary: Modifier (avant lancement uniquement pour les règles financières)
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/GroupInput' }
+      responses:
+        '200': { description: Mis à jour }
+        '409': { description: Groupe déjà lancé }
+  /groups/join:
+    post:
+      tags: [Groups]
+      summary: Demander à rejoindre un groupe avec un code d'invitation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [invite_code]
+              properties:
+                invite_code: { type: string }
+      responses:
+        '202': { description: Demande en attente de validation }
+  /groups/{groupId}/launch:
+    post:
+      tags: [Groups]
+      summary: Lancer le groupe (verrouille membres et ordre)
+      parameters:
+        - $ref: '#/components/parameters/groupId'
+      responses:
+        '200': { description: Groupe lancé, calendrier généré }
+        '422': { description: Nombre minimum de membres non atteint ou ordre incomplet }
+  /groups/{groupId}/close:
+    post:
+      tags: [Groups]
+      summary: Clôturer le groupe/cycle
+      parameters:
+        - $ref: '#/components/parameters/groupId'
+      responses:
+        '200': { description: Clôturé }
+
+  /groups/{groupId}/members:
+    parameters:
+      - $ref: '#/components/parameters/groupId'
+    get:
+      tags: [Members]
+      summary: Liste des membres
+      parameters:
+        - { name: status, in: query, schema: { type: string } }
+        - { name: page, in: query, schema: { type: integer, default: 1 } }
+        - { name: page_size, in: query, schema: { type: integer, default: 50, maximum: 100 } }
+      responses:
+        '200':
+          description: Liste paginée
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Member' }
+    post:
+      tags: [Members]
+      summary: Créer un membre (président) - envoie un lien d'activation
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [full_name, phone]
+              properties:
+                full_name: { type: string }
+                phone: { type: string }
+                email: { type: string, format: email }
+                role: { $ref: '#/components/schemas/GroupRole' }
+      responses:
+        '201': { description: Membre créé et invité }
+        '422': { description: Limite de 100 membres atteinte }
+  /groups/{groupId}/members/import:
+    post:
+      tags: [Members]
+      summary: Import CSV (colonnes full_name,phone,email)
+      parameters:
+        - $ref: '#/components/parameters/groupId'
+      requestBody:
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              properties:
+                file: { type: string, format: binary }
+      responses:
+        '200':
+          description: Rapport d'import
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created: { type: integer }
+                  skipped: { type: integer }
+                  errors:
+                    type: array
+                    items:
+                      {
+                        type: object,
+                        properties: { line: { type: integer }, message: { type: string } },
+                      }
+  /groups/{groupId}/members/{memberId}/approve:
+    post:
+      tags: [Members]
+      summary: Valider une demande d'adhésion
+      parameters:
+        - $ref: '#/components/parameters/groupId'
+        - $ref: '#/components/parameters/memberId'
+      responses:
+        '200': { description: Membre actif }
+  /groups/{groupId}/members/{memberId}/role:
+    patch:
+      tags: [Members]
+      summary: Attribuer un rôle
+      parameters:
+        - $ref: '#/components/parameters/groupId'
+        - $ref: '#/components/parameters/memberId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [role]
+              properties:
+                role: { $ref: '#/components/schemas/GroupRole' }
+      responses:
+        '200': { description: Rôle modifié }
+  /groups/{groupId}/members/{memberId}/suspend:
+    post:
+      tags: [Members]
+      summary: Suspendre un membre
+      parameters:
+        - $ref: '#/components/parameters/groupId'
+        - $ref: '#/components/parameters/memberId'
+      responses:
+        '200': { description: Suspendu }
+  /groups/{groupId}/members/{memberId}/replace:
+    post:
+      tags: [Members]
+      summary: Remplacer un membre par un autre utilisateur
+      parameters:
+        - $ref: '#/components/parameters/groupId'
+        - $ref: '#/components/parameters/memberId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [new_user_id]
+              properties:
+                new_user_id: { type: string, format: uuid }
+      responses:
+        '200': { description: Remplacé }
+
+  /groups/{groupId}/draw:
+    post:
+      tags: [Rounds]
+      summary: Tirage au sort de l'ordre (graine enregistrée)
+      parameters:
+        - $ref: '#/components/parameters/groupId'
+      responses:
+        '200':
+          description: Ordre tiré
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Member' }
+  /groups/{groupId}/order:
+    put:
+      tags: [Rounds]
+      summary: Définir l'ordre manuellement
+      parameters:
+        - $ref: '#/components/parameters/groupId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                member_ids:
+                  type: array
+                  items: { type: string, format: uuid }
+      responses:
+        '200': { description: Ordre enregistré }
+  /groups/{groupId}/rounds:
+    get:
+      tags: [Rounds]
+      summary: Calendrier complet des tours
+      parameters:
+        - $ref: '#/components/parameters/groupId'
+      responses:
+        '200':
+          description: Tours
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Round' }
+  /groups/{groupId}/rounds/current:
+    get:
+      tags: [Rounds]
+      summary: Tour en cours ("qui reçoit ?")
+      parameters:
+        - $ref: '#/components/parameters/groupId'
+      responses:
+        '200':
+          description: Tour courant
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Round' }
+  /rounds/{roundId}:
+    get:
+      tags: [Rounds]
+      summary: Détail d'un tour
+      parameters:
+        - $ref: '#/components/parameters/roundId'
+      responses:
+        '200':
+          description: Détail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Round' }
+  /rounds/{roundId}/contributions:
+    get:
+      tags: [Rounds]
+      summary: Statut des cotisations du tour
+      parameters:
+        - $ref: '#/components/parameters/roundId'
+      responses:
+        '200':
+          description: Cotisations
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Contribution' }
+
+  /contributions/{contributionId}/pay:
+    post:
+      tags: [Payments]
+      summary: Initier le paiement d'une cotisation
+      parameters:
+        - { name: contributionId, in: path, required: true, schema: { type: string, format: uuid } }
+        - { name: Idempotency-Key, in: header, required: true, schema: { type: string } }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [method, payer_number]
+              properties:
+                method: { type: string, enum: [mtn_momo, orange_money, bank] }
+                payer_number: { type: string }
+      responses:
+        '202':
+          description: Paiement initié (confirmation sur le téléphone du payeur)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payment' }
+        '409': { description: Déjà payé }
+  /payments/{paymentId}:
+    get:
+      tags: [Payments]
+      summary: Statut d'un paiement
+      parameters:
+        - { name: paymentId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Paiement
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payment' }
+  /payments/{paymentId}/receipt:
+    get:
+      tags: [Payments]
+      summary: Reçu PDF
+      parameters:
+        - { name: paymentId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: PDF
+          content:
+            application/pdf:
+              schema: { type: string, format: binary }
+  /me/payments:
+    get:
+      tags: [Payments]
+      summary: Mon historique de paiements
+      responses:
+        '200':
+          description: Paiements
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Payment' }
+
+  /groups/{groupId}/escrow:
+    get:
+      tags: [Escrow]
+      summary: Solde du séquestre du groupe
+      parameters:
+        - $ref: '#/components/parameters/groupId'
+      responses:
+        '200':
+          description: Solde
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  balance: { type: integer }
+                  guarantee_balance: { type: integer }
+                  currency: { type: string }
+  /groups/{groupId}/ledger:
+    get:
+      tags: [Escrow]
+      summary: Mouvements du grand livre
+      parameters:
+        - $ref: '#/components/parameters/groupId'
+        - { name: page, in: query, schema: { type: integer } }
+      responses:
+        '200':
+          description: Écritures
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/LedgerEntry' }
+
+  /rounds/{roundId}/payout/request:
+    post:
+      tags: [Payouts]
+      summary: Demander le décaissement (si mode manuel/validation)
+      parameters:
+        - $ref: '#/components/parameters/roundId'
+      responses:
+        '202':
+          description: Demande créée
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payout' }
+        '422': { description: Conditions de décaissement non remplies }
+  /rounds/{roundId}/payout/approve:
+    post:
+      tags: [Payouts]
+      summary: Approuver le décaissement (OTP requis)
+      parameters:
+        - $ref: '#/components/parameters/roundId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [otp_code]
+              properties:
+                otp_code: { type: string }
+      responses:
+        '200': { description: Approuvé }
+        '403': { description: Le demandeur ne peut pas approuver sa propre demande }
+  /payouts/{payoutId}:
+    get:
+      tags: [Payouts]
+      summary: Statut d'un décaissement
+      parameters:
+        - { name: payoutId, in: path, required: true, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Décaissement
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Payout' }
+
+  /disputes:
+    get:
+      tags: [Disputes]
+      summary: Litiges visibles par l'utilisateur
+      responses:
+        '200':
+          description: Liste
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Dispute' }
+    post:
+      tags: [Disputes]
+      summary: Ouvrir un litige
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [group_id, subject, description]
+              properties:
+                group_id: { type: string, format: uuid }
+                round_id: { type: string, format: uuid }
+                payment_id: { type: string, format: uuid }
+                subject: { type: string }
+                description: { type: string }
+      responses:
+        '201': { description: Litige ouvert }
+  /disputes/{disputeId}:
+    patch:
+      tags: [Disputes]
+      summary: Traiter un litige (admin)
+      parameters:
+        - { name: disputeId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                status: { type: string, enum: [in_review, resolved, rejected] }
+                resolution: { type: string }
+      responses:
+        '200': { description: Mis à jour }
+
+  /admin/groups:
+    get:
+      tags: [Admin]
+      summary: Tous les groupes (super admin)
+      responses:
+        '200': { description: Liste }
+  /admin/users:
+    get:
+      tags: [Admin]
+      summary: Tous les utilisateurs
+      responses:
+        '200': { description: Liste }
+  /admin/users/{userId}/kyc:
+    patch:
+      tags: [Admin]
+      summary: Valider ou rejeter le KYC
+      parameters:
+        - { name: userId, in: path, required: true, schema: { type: string, format: uuid } }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                decision: { type: string, enum: [verified, rejected] }
+                reason: { type: string }
+      responses:
+        '200': { description: OK }
+  /admin/reconciliation:
+    get:
+      tags: [Admin]
+      summary: Résultats de réconciliation
+      responses:
+        '200': { description: Liste }
+  /admin/audit-logs:
+    get:
+      tags: [Admin]
+      summary: Journal d'audit
+      responses:
+        '200': { description: Liste }
+  /admin/settings:
+    get:
+      tags: [Admin]
+      summary: Paramètres globaux
+      responses:
+        '200': { description: Paramètres }
+    patch:
+      tags: [Admin]
+      summary: Modifier les paramètres globaux
+      responses:
+        '200': { description: OK }
+
+  /webhooks/payments/{provider}:
+    post:
+      tags: [Webhooks]
+      security: []
+      summary: Webhook de l'agrégateur (signature vérifiée, idempotent)
+      parameters:
+        - { name: provider, in: path, required: true, schema: { type: string } }
+        - { name: X-Signature, in: header, required: true, schema: { type: string } }
+      requestBody:
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200': { description: Reçu }
+        '401': { description: Signature invalide }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    groupId:
+      name: groupId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    memberId:
+      name: memberId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    roundId:
+      name: roundId
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+  responses:
+    Unauthorized:
+      description: Non authentifié
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Accès refusé
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Conflit
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Validation:
+      description: Données invalides
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+  schemas:
+    Error:
+      type: object
+      properties:
+        code: { type: string }
+        message: { type: string }
+        details: { type: object }
+    TokenPair:
+      type: object
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        expires_in: { type: integer }
+    GroupRole:
+      type: string
+      enum: [president, treasurer, member, observer]
+    RegisterRequest:
+      type: object
+      required: [full_name, phone, password]
+      properties:
+        full_name: { type: string }
+        phone: { type: string, example: '+237650000000' }
+        email: { type: string, format: email }
+        password: { type: string, format: password, minLength: 8 }
+        invite_code: { type: string }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        full_name: { type: string }
+        phone: { type: string }
+        email: { type: string }
+        kyc: { type: string, enum: [none, submitted, verified, rejected] }
+        two_fa_enabled: { type: boolean }
+    PayoutAccountInput:
+      type: object
+      required: [type, account_number, holder_name]
+      properties:
+        type: { type: string, enum: [mtn_momo, orange_money, bank] }
+        account_number: { type: string }
+        holder_name: { type: string }
+        otp_code: { type: string }
+    PayoutAccount:
+      allOf:
+        - $ref: '#/components/schemas/PayoutAccountInput'
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            is_default: { type: boolean }
+            active_from: { type: string, format: date-time }
+    GroupInput:
+      type: object
+      required: [name, contribution_amount, frequency, start_date]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        rules_text: { type: string }
+        contribution_amount: { type: integer, minimum: 1000 }
+        frequency: { type: string, enum: [weekly, biweekly, monthly] }
+        start_date: { type: string, format: date }
+        min_members: { type: integer, minimum: 2, default: 10 }
+        max_members: { type: integer, maximum: 100, default: 100 }
+        payout_rule: { type: string, enum: [strict, flexible] }
+        beneficiary_pays: { type: boolean }
+        payment_deadline_days: { type: integer }
+        late_fee_type: { type: string, enum: [fixed, percent] }
+        late_fee_value: { type: integer }
+        order_mode: { type: string, enum: [random, manual] }
+    Group:
+      allOf:
+        - $ref: '#/components/schemas/GroupInput'
+        - type: object
+          properties:
+            id: { type: string, format: uuid }
+            status: { type: string, enum: [draft, recruiting, active, completed, cancelled] }
+            invite_code: { type: string }
+            members_count: { type: integer }
+            my_role: { $ref: '#/components/schemas/GroupRole' }
+    Member:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        user_id: { type: string, format: uuid }
+        full_name: { type: string }
+        role: { $ref: '#/components/schemas/GroupRole' }
+        status: { type: string }
+        position: { type: integer }
+        risk_flag: { type: boolean }
+    Round:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        round_number: { type: integer }
+        beneficiary: { $ref: '#/components/schemas/Member' }
+        opens_on: { type: string, format: date }
+        due_date: { type: string, format: date }
+        payout_date: { type: string, format: date }
+        expected_amount: { type: integer }
+        collected_amount: { type: integer }
+        status:
+          { type: string, enum: [scheduled, open, collecting, ready, paid_out, failed, cancelled] }
+    Contribution:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        member: { $ref: '#/components/schemas/Member' }
+        amount: { type: integer }
+        penalty_amount: { type: integer }
+        status: { type: string, enum: [pending, paid, late, failed, refunded, waived] }
+        paid_at: { type: string, format: date-time }
+    Payment:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        contribution_id: { type: string, format: uuid }
+        amount: { type: integer }
+        provider_fee: { type: integer }
+        method: { type: string }
+        status: { type: string, enum: [initiated, pending, confirmed, failed, refunded] }
+        receipt_number: { type: string }
+        created_at: { type: string, format: date-time }
+    LedgerEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        type: { type: string }
+        debit: { type: integer }
+        credit: { type: integer }
+        description: { type: string }
+        created_at: { type: string, format: date-time }
+    Payout:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        round_id: { type: string, format: uuid }
+        gross_amount: { type: integer }
+        platform_fee: { type: integer }
+        provider_fee: { type: integer }
+        net_amount: { type: integer }
+        status:
+          {
+            type: string,
+            enum: [pending_approval, approved, processing, success, failed, cancelled],
+          }
+        executed_at: { type: string, format: date-time }
+    Dispute:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        subject: { type: string }
+        status: { type: string }
+        resolution: { type: string }
