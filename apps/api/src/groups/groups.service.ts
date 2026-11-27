@@ -312,9 +312,11 @@ export class GroupsService {
       assertGroupMember(membership ?? null);
     }
 
+    // Cycle le plus récent : après une clôture, ce n'est plus forcément le cycle 1.
     const cycle = await this.prisma.cycles.findFirst({
-      where: { group_id: groupId, cycle_number: 1 },
+      where: { group_id: groupId },
       select: { draw_seed: true, drawn_at: true },
+      orderBy: { cycle_number: 'desc' },
     });
 
     return {

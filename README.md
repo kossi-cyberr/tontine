@@ -38,6 +38,7 @@ npm run dev                # api sur :3001, web sur :3000
 | `npm run build`                      | Build de `shared-types`, l'API et le web       |
 | `npm run lint` / `npm run typecheck` | Qualité statique                               |
 | `npm test`                           | Tests Jest (API)                               |
+| `npm run test:e2e -w @tontine/web`   | Tests Playwright (API et web démarrés, Chrome) |
 | `npm run db:migrate`                 | `prisma migrate deploy` sur `db/schema.prisma` |
 | `npm run db:seed`                    | Super admin, président, 9 membres, groupe démo |
 

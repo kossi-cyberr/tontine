@@ -19,7 +19,9 @@ export type NotificationTemplate =
   | 'dispute_opened'
   | 'dispute_decided'
   | 'member_replaced'
-  | 'round_cancelled';
+  | 'round_cancelled'
+  | 'cycle_closed'
+  | 'cycle_opened';
 
 type PayloadValue = string | number | null | undefined;
 export type NotificationPayload = Record<string, PayloadValue>;
@@ -126,6 +128,16 @@ export function renderNotification(
       return {
         title: 'Tour annulé',
         message: `${group} : le ${round} est annulé. Motif : ${String(payload.reason ?? 'non précisé')}. Remboursement de ${formatXaf(amount)} enregistré.`,
+      };
+    case 'cycle_closed':
+      return {
+        title: 'Cycle terminé',
+        message: `${group} : le cycle ${String(payload.cycle_number ?? '')} est clôturé. Merci à tous les membres.`,
+      };
+    case 'cycle_opened':
+      return {
+        title: 'Nouveau cycle',
+        message: `${group} : le cycle ${String(payload.cycle_number ?? '')} démarre. Cotisation attendue : ${formatXaf(amount)}.`,
       };
   }
 }

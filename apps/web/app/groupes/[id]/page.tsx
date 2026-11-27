@@ -51,6 +51,7 @@ import {
   type Frequency,
   ROUND_STATUS_LABELS,
   type Group,
+  type GroupCycle,
   type GroupMember,
   type GroupRole,
   type ImportReport,
@@ -95,10 +96,12 @@ export default function GroupeDetailPage() {
   const [group, setGroup] = useState<Group | null>(null);
   const [members, setMembers] = useState<GroupMember[]>([]);
   const [rounds, setRounds] = useState<Round[]>([]);
+  const [cycles, setCycles] = useState<GroupCycle[]>([]);
   const [currentRound, setCurrentRound] = useState<Round | null>(null);
   const [drawSeed, setDrawSeed] = useState<string | null>(null);
   const [drawing, setDrawing] = useState(false);
   const [launching, setLaunching] = useState(false);
+  const [cycleBusy, setCycleBusy] = useState(false);
   const [tab, setTab] = useState<Tab>('membres');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -144,16 +147,18 @@ export default function GroupeDetailPage() {
 
   const load = useCallback(async () => {
     try {
-      const [groupData, memberData, roundData, currentData] = await Promise.all([
+      const [groupData, memberData, roundData, currentData, cycleData] = await Promise.all([
         groupsApi.get(groupId),
         groupsApi.members(groupId),
         groupsApi.rounds(groupId),
         groupsApi.currentRound(groupId),
+        groupsApi.cycles(groupId),
       ]);
       setGroup(groupData);
       setMembers(memberData);
       setRounds(roundData);
       setCurrentRound(currentData);
+      setCycles(cycleData);
       setDrawSeed(groupData.draw_seed ?? null);
       setSettings({
         name: groupData.name,
@@ -398,6 +403,45 @@ export default function GroupeDetailPage() {
       setError(err instanceof ApiError ? err.message : 'Lancement impossible.');
     } finally {
       setLaunching(false);
+    }
+  }
+
+  async function closeCycle() {
+    const running = cycles.find((cycle) => cycle.status === 'running');
+    if (!running) return;
+    if (
+      !window.confirm(
+        `Clôturer le cycle ${running.cycle_number} ? Les tours doivent tous être décaissés et le séquestre vidé.`,
+      )
+    ) {
+      return;
+    }
+    setCycleBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await groupsApi.closeCycle(groupId);
+      setNotice(`${result.message} Dettes ouvertes : ${result.open_debts}.`);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Clôture impossible.');
+    } finally {
+      setCycleBusy(false);
+    }
+  }
+
+  async function openNextCycle(redraw: boolean) {
+    setCycleBusy(true);
+    setError(null);
+    setNotice(null);
+    try {
+      const result = await groupsApi.openNextCycle(groupId, { redraw });
+      setNotice(result.message);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Ouverture du cycle impossible.');
+    } finally {
+      setCycleBusy(false);
     }
   }
 
@@ -1089,6 +1133,49 @@ export default function GroupeDetailPage() {
                   );
                 })}
               </ol>
+
+              {group?.my_role === 'president' ? (
+                <Card className="space-y-3">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <h2 className="text-sm font-bold text-ink">Cycle</h2>
+                      <p className="mt-1 text-xs text-slate-500">
+                        Clôturez le cycle courant une fois tous les tours décaissés, puis ouvrez le
+                        suivant.
+                      </p>
+                    </div>
+                    <Badge tone="neutral">{cycles.length} cycle(s)</Badge>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {cycles.some((cycle) => cycle.status === 'running') ? (
+                      <Button
+                        variant="secondary"
+                        onClick={closeCycle}
+                        disabled={
+                          cycleBusy ||
+                          !rounds.every((round) => ['paid_out', 'cancelled'].includes(round.status))
+                        }
+                      >
+                        {cycleBusy ? 'Traitement…' : 'Clôturer le cycle en cours'}
+                      </Button>
+                    ) : null}
+                    {group.status === 'completed' ? (
+                      <>
+                        <Button onClick={() => openNextCycle(false)} disabled={cycleBusy}>
+                          {cycleBusy ? 'Traitement…' : 'Ouvrir le cycle suivant'}
+                        </Button>
+                        <Button
+                          variant="secondary"
+                          onClick={() => openNextCycle(true)}
+                          disabled={cycleBusy}
+                        >
+                          {cycleBusy ? 'Traitement…' : 'Ouvrir avec nouveau tirage'}
+                        </Button>
+                      </>
+                    ) : null}
+                  </div>
+                </Card>
+              ) : null}
 
               {rounds.length === 0 ? (
                 <EmptyState

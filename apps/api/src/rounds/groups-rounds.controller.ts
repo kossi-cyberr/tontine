@@ -14,7 +14,12 @@ import { CurrentUser, type AuthUser } from '../common/auth/current-user.decorato
 import { RateLimit } from '../common/rate-limit.guard';
 import { ZodValidationPipe } from '../common/zod-validation.pipe';
 import { RoundsService } from './rounds.service';
-import { orderSchema, type OrderInput } from './rounds.schemas';
+import {
+  openCycleSchema,
+  orderSchema,
+  type OpenCycleInput,
+  type OrderInput,
+} from './rounds.schemas';
 
 @ApiTags('Rounds')
 @ApiBearerAuth()
@@ -64,5 +69,29 @@ export class GroupsRoundsController {
   @ApiOperation({ summary: 'Tour en cours (« qui reçoit ce tour ? »)' })
   current(@CurrentUser() user: AuthUser, @Param('groupId', ParseUUIDPipe) groupId: string) {
     return this.rounds.currentRound(user, groupId);
+  }
+
+  @Get('cycles')
+  @ApiOperation({ summary: 'Historique des cycles du groupe' })
+  cycles(@CurrentUser() user: AuthUser, @Param('groupId', ParseUUIDPipe) groupId: string) {
+    return this.rounds.listCycles(user, groupId);
+  }
+
+  @Post('cycles/close')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Clôturer le cycle en cours' })
+  closeCycle(@CurrentUser() user: AuthUser, @Param('groupId', ParseUUIDPipe) groupId: string) {
+    return this.rounds.closeCycle(user, groupId);
+  }
+
+  @Post('cycles')
+  @HttpCode(HttpStatus.CREATED)
+  @ApiOperation({ summary: 'Ouvrir le cycle suivant' })
+  openCycle(
+    @CurrentUser() user: AuthUser,
+    @Param('groupId', ParseUUIDPipe) groupId: string,
+    @Body(new ZodValidationPipe(openCycleSchema)) body: OpenCycleInput,
+  ) {
+    return this.rounds.openNextCycle(user, groupId, body);
   }
 }

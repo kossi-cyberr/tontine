@@ -5,6 +5,7 @@ import {
   Injectable,
   UnprocessableEntityException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import type { group_members as MemberRow, rounds as RoundRow } from '@prisma/client';
 import { AuditService } from '../audit/audit.service';
 import { NotificationsService } from '../notifications/notifications.service';
@@ -17,6 +18,7 @@ import {
   type Actor,
 } from '../groups/permissions';
 import {
+  addDaysUtc,
   computeLatePenalty,
   expectedRoundAmount,
   generateDrawSeed,
@@ -24,6 +26,7 @@ import {
   seededShuffle,
   toUtcDate,
 } from './calendar';
+import type { OpenCycleInput } from './rounds.schemas';
 
 interface MemberWithUser extends MemberRow {
   users_group_members_user_idTousers: {
@@ -508,14 +511,412 @@ export class RoundsService {
     };
   }
 
+  // ---------- Cycles ----------
+
+  private serializeCycle(
+    cycle: {
+      id: string;
+      cycle_number: number;
+      status: string;
+      start_date: Date;
+      end_date: Date | null;
+      draw_seed: string | null;
+      drawn_at: Date | null;
+    },
+    rounds: { status: string }[] = [],
+  ) {
+    const settled = rounds.filter((round) => ['paid_out', 'cancelled'].includes(round.status));
+    return {
+      id: cycle.id,
+      cycle_number: cycle.cycle_number,
+      status: cycle.status,
+      start_date: dateOnly(cycle.start_date),
+      end_date: cycle.end_date ? dateOnly(cycle.end_date) : null,
+      draw_seed: cycle.draw_seed,
+      drawn_at: cycle.drawn_at ? cycle.drawn_at.toISOString() : null,
+      rounds_count: rounds.length,
+      settled_rounds: settled.length,
+    };
+  }
+
+  async listCycles(actor: Actor, groupId: string) {
+    await this.assertMember(actor, groupId);
+    const cycles = await this.prisma.cycles.findMany({
+      where: { group_id: groupId },
+      include: { rounds: { select: { status: true } } },
+      orderBy: { cycle_number: 'asc' },
+    });
+    return cycles.map((cycle) => this.serializeCycle(cycle, cycle.rounds));
+  }
+
+  /**
+   * Clôture le cycle en cours. Tous les tours doivent être réglés (décaissés ou annulés),
+   * aucun décaissement ne doit être en cours et le séquestre doit être vide : un cycle
+   * ne se clôture pas sur de l'argent encore dû.
+   */
+  async closeCycle(actor: Actor, groupId: string) {
+    await this.assertManager(actor, groupId);
+    await this.requireGroup(groupId);
+
+    const cycle = await this.prisma.cycles.findFirst({
+      where: { group_id: groupId, status: 'running' },
+      orderBy: { cycle_number: 'desc' },
+    });
+    if (!cycle) {
+      throw new ConflictException({
+        code: 'NO_RUNNING_CYCLE',
+        message: 'Aucun cycle en cours à clôturer.',
+      });
+    }
+
+    const rounds = await this.prisma.rounds.findMany({
+      where: { cycle_id: cycle.id },
+      select: { id: true, round_number: true, status: true, payout_date: true },
+    });
+    if (rounds.length === 0) {
+      throw new UnprocessableEntityException({
+        code: 'EMPTY_CYCLE',
+        message: 'Ce cycle ne contient aucun tour : il ne peut pas être clôturé.',
+      });
+    }
+
+    const unsettled = rounds.filter((round) => !['paid_out', 'cancelled'].includes(round.status));
+    if (unsettled.length > 0) {
+      const numbers = unsettled.map((round) => round.round_number).sort((a, b) => a - b);
+      throw new UnprocessableEntityException({
+        code: 'ROUNDS_NOT_SETTLED',
+        message: `Tous les tours doivent être décaissés ou annulés avant la clôture (tours en attente : ${numbers.join(', ')}).`,
+        details: { rounds: numbers },
+      });
+    }
+
+    const activePayouts = await this.prisma.payouts.count({
+      where: {
+        round_id: { in: rounds.map((round) => round.id) },
+        status: { in: ['pending_approval', 'approved', 'processing'] },
+      },
+    });
+    if (activePayouts > 0) {
+      throw new ConflictException({
+        code: 'PAYOUT_IN_PROGRESS',
+        message: 'Un décaissement est en cours d’approbation ou d’exécution sur ce cycle.',
+      });
+    }
+
+    const escrow = await this.prisma.escrow_accounts.findUnique({ where: { group_id: groupId } });
+    if (escrow && escrow.balance_cached !== 0n) {
+      throw new UnprocessableEntityException({
+        code: 'ESCROW_NOT_EMPTY',
+        message: `Le séquestre contient encore ${Number(escrow.balance_cached)} XAF : clôture refusée.`,
+        details: { balance: Number(escrow.balance_cached) },
+      });
+    }
+
+    const openDebts = await this.prisma.member_debts.count({
+      where: { status: 'open', rounds: { cycle_id: cycle.id } },
+    });
+
+    const lastPayout = rounds
+      .map((round) => toUtcDate(round.payout_date).getTime())
+      .reduce((latest, value) => Math.max(latest, value), 0);
+    const endDate = toUtcDate(new Date(lastPayout));
+    const now = new Date();
+
+    await this.prisma.$transaction(async (tx) => {
+      const closed = await tx.cycles.updateMany({
+        where: { id: cycle.id, status: 'running' },
+        data: { status: 'completed', end_date: endDate },
+      });
+      if (closed.count === 0) {
+        throw new ConflictException({
+          code: 'CYCLE_ALREADY_CLOSED',
+          message: 'Ce cycle est déjà clôturé.',
+        });
+      }
+      await tx.groups.update({
+        where: { id: groupId },
+        data: { status: 'completed', updated_at: now },
+      });
+    });
+
+    await this.audit.record({
+      actorId: actor.id,
+      action: 'cycle.close',
+      entity: 'groups',
+      entityId: groupId,
+      metadata: { cycle_number: cycle.cycle_number, rounds: rounds.length, open_debts: openDebts },
+    });
+
+    const members = await this.participants(groupId);
+    const group = await this.requireGroup(groupId);
+    for (const member of members) {
+      try {
+        await this.notifications.notify({
+          userId: member.user_id,
+          template: 'cycle_closed',
+          payload: {
+            group_name: group.name,
+            cycle_number: cycle.cycle_number,
+          },
+          dedupeKey: `cycle_closed:${cycle.id}:${member.id}`,
+        });
+      } catch {
+        // La clôture ne dépend pas de l'envoi des notifications.
+      }
+    }
+
+    return {
+      message: `Cycle ${cycle.cycle_number} clôturé.`,
+      cycle: this.serializeCycle({ ...cycle, status: 'completed', end_date: endDate }, rounds),
+      open_debts: openDebts,
+      next_cycle_number: cycle.cycle_number + 1,
+    };
+  }
+
+  /** Ouvre le cycle suivant : nouvel ordre (facultatif), tours, cotisations, échéances. */
+  async openNextCycle(actor: Actor, groupId: string, input: OpenCycleInput) {
+    await this.assertManager(actor, groupId);
+    const group = await this.requireGroup(groupId);
+
+    if (!group.launched_at) {
+      throw new ConflictException({
+        code: 'GROUP_NOT_LAUNCHED',
+        message: 'Lancez le groupe avant d’ouvrir un nouveau cycle.',
+      });
+    }
+
+    const previous = await this.prisma.cycles.findFirst({
+      where: { group_id: groupId },
+      orderBy: { cycle_number: 'desc' },
+    });
+    if (!previous) {
+      throw new ConflictException({
+        code: 'NO_CYCLE_TO_FOLLOW',
+        message: 'Aucun cycle précédent : utilisez le lancement du groupe.',
+      });
+    }
+    if (previous.status !== 'completed') {
+      throw new ConflictException({
+        code: 'PREVIOUS_CYCLE_NOT_CLOSED',
+        message: `Le cycle ${previous.cycle_number} n’est pas clôturé : impossible d’ouvrir le suivant.`,
+      });
+    }
+
+    const participants = await this.participants(groupId);
+    if (participants.length < 2) {
+      throw new UnprocessableEntityException({
+        code: 'NOT_ENOUGH_MEMBERS',
+        message: 'Il faut au moins deux membres actifs pour ouvrir un cycle.',
+      });
+    }
+    if (participants.length > group.max_members) {
+      throw new UnprocessableEntityException({
+        code: 'MAX_MEMBERS_EXCEEDED',
+        message: `Le groupe dépasse sa limite de ${group.max_members} membres.`,
+      });
+    }
+
+    const seed = input.redraw ? generateDrawSeed() : null;
+    if (!seed) {
+      const positions = participants.map((member) => member.position);
+      const complete =
+        positions.every((position) => position !== null) &&
+        new Set(positions).size === participants.length;
+      if (!complete) {
+        throw new UnprocessableEntityException({
+          code: 'ORDER_INCOMPLETE',
+          message:
+            'Définissez l’ordre de passage de tous les membres ou demandez un nouveau tirage.',
+        });
+      }
+    }
+    const ordered = seed
+      ? seededShuffle(participants, seed)
+      : [...participants].sort((left, right) => (left.position ?? 0) - (right.position ?? 0));
+
+    const today = toUtcDate(new Date());
+    const afterPrevious = previous.end_date ? addDaysUtc(toUtcDate(previous.end_date), 1) : today;
+    const requestedStart = input.start_date ? toUtcDate(input.start_date) : null;
+    if (requestedStart && requestedStart.getTime() < today.getTime()) {
+      throw new UnprocessableEntityException({
+        code: 'START_DATE_IN_PAST',
+        message: 'La date de début ne peut pas être dans le passé.',
+      });
+    }
+    if (requestedStart && requestedStart.getTime() < afterPrevious.getTime()) {
+      throw new UnprocessableEntityException({
+        code: 'START_DATE_BEFORE_PREVIOUS_END',
+        message: `La date de début doit être postérieure à la fin du cycle ${previous.cycle_number} (${dateOnly(afterPrevious)}).`,
+      });
+    }
+    const startDate =
+      requestedStart ?? (afterPrevious.getTime() < today.getTime() ? today : afterPrevious);
+
+    const schedule = generateSchedule(
+      startDate,
+      group.frequency,
+      ordered.length,
+      group.payment_deadline_days,
+    );
+    const expectedAmount = expectedRoundAmount(
+      ordered.length,
+      Number(group.contribution_amount),
+      group.beneficiary_pays,
+    );
+    const cycleNumber = previous.cycle_number + 1;
+    const endDate = schedule[schedule.length - 1]!.payout_date;
+    const now = new Date();
+    const drawnAt = seed ? now : null;
+
+    let cycleId: string;
+    try {
+      cycleId = await this.prisma.$transaction(async (tx) => {
+        if (seed) {
+          // La contrainte unique (group_id, position) impose de libérer les positions avant réattribution.
+          await tx.group_members.updateMany({
+            where: { group_id: groupId },
+            data: { position: null },
+          });
+          for (let index = 0; index < ordered.length; index += 1) {
+            await tx.group_members.update({
+              where: { id: ordered[index]!.id },
+              data: { position: index + 1 },
+            });
+          }
+        }
+
+        const cycle = await tx.cycles.create({
+          data: {
+            group_id: groupId,
+            cycle_number: cycleNumber,
+            start_date: startDate,
+            end_date: endDate,
+            status: 'running',
+            draw_seed: seed,
+            drawn_at: drawnAt,
+          },
+        });
+
+        for (let index = 0; index < ordered.length; index += 1) {
+          const beneficiary = ordered[index]!;
+          const dates = schedule[index]!;
+          const round = await tx.rounds.create({
+            data: {
+              cycle_id: cycle.id,
+              group_id: groupId,
+              round_number: index + 1,
+              beneficiary_member_id: beneficiary.id,
+              opens_on: dates.opens_on,
+              due_date: dates.due_date,
+              payout_date: dates.payout_date,
+              expected_amount: BigInt(expectedAmount),
+              status: 'scheduled',
+            },
+          });
+
+          const payers = group.beneficiary_pays
+            ? ordered
+            : ordered.filter((member) => member.id !== beneficiary.id);
+
+          if (payers.length > 0) {
+            await tx.contributions.createMany({
+              data: payers.map((payer) => ({
+                round_id: round.id,
+                member_id: payer.id,
+                amount: group.contribution_amount,
+                due_date: dates.due_date,
+                status: 'pending' as const,
+              })),
+            });
+          }
+        }
+
+        await tx.escrow_accounts.upsert({
+          where: { group_id: groupId },
+          create: { group_id: groupId, currency: group.currency.trim(), balance_cached: 0n },
+          update: {},
+        });
+
+        await tx.groups.update({
+          where: { id: groupId },
+          data: { status: 'active', updated_at: now },
+        });
+
+        return cycle.id;
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        throw new ConflictException({
+          code: 'CYCLE_ALREADY_OPENED',
+          message: 'Le cycle suivant est déjà ouvert.',
+        });
+      }
+      throw error;
+    }
+
+    await this.audit.record({
+      actorId: actor.id,
+      action: 'cycle.open',
+      entity: 'groups',
+      entityId: groupId,
+      metadata: { cycle_number: cycleNumber, rounds: ordered.length, redraw: Boolean(seed), seed },
+    });
+
+    for (const member of ordered) {
+      try {
+        await this.notifications.notify({
+          userId: member.user_id,
+          template: 'cycle_opened',
+          payload: {
+            group_name: group.name,
+            cycle_number: cycleNumber,
+            amount: Number(group.contribution_amount),
+          },
+          dedupeKey: `cycle_opened:${cycleId}:${member.id}`,
+        });
+      } catch {
+        // L'ouverture du cycle ne dépend pas de l'envoi des notifications.
+      }
+    }
+
+    return {
+      message: `Cycle ${cycleNumber} ouvert : ${ordered.length} tours planifiés.`,
+      cycle: this.serializeCycle(
+        {
+          id: cycleId,
+          cycle_number: cycleNumber,
+          status: 'running',
+          start_date: startDate,
+          end_date: endDate,
+          draw_seed: seed,
+          drawn_at: drawnAt,
+        },
+        ordered.map(() => ({ status: 'scheduled' })),
+      ),
+      expected_amount: expectedAmount,
+      order: ordered.map((member, index) => ({
+        ...this.serializeParticipant(member as MemberWithUser),
+        position: index + 1,
+      })),
+      rounds: await this.listRounds(actor, groupId),
+    };
+  }
+
   // ---------- Consultation ----------
 
   async listRounds(actor: Actor, groupId: string) {
     const membership = await this.assertMember(actor, groupId);
     await this.requireGroup(groupId);
 
-    const rounds = await this.prisma.rounds.findMany({
+    // Un groupe peut avoir plusieurs cycles : le calendrier affiché est celui du cycle courant.
+    const cycle = await this.prisma.cycles.findFirst({
       where: { group_id: groupId },
+      orderBy: { cycle_number: 'desc' },
+      select: { id: true },
+    });
+
+    const rounds = await this.prisma.rounds.findMany({
+      where: { group_id: groupId, ...(cycle ? { cycle_id: cycle.id } : {}) },
       include: {
         group_members: {
           include: {
@@ -545,9 +946,16 @@ export class RoundsService {
   async currentRound(actor: Actor, groupId: string) {
     const membership = await this.assertMember(actor, groupId);
 
+    const cycle = await this.prisma.cycles.findFirst({
+      where: { group_id: groupId },
+      orderBy: { cycle_number: 'desc' },
+      select: { id: true },
+    });
+
     const round = await this.prisma.rounds.findFirst({
       where: {
         group_id: groupId,
+        ...(cycle ? { cycle_id: cycle.id } : {}),
         status: { in: ['scheduled', 'open', 'collecting', 'ready'] },
       },
       include: {

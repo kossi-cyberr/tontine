@@ -127,6 +127,18 @@ export interface DrawResult {
   order: (GroupMember & { position: number })[];
 }
 
+export interface GroupCycle {
+  id: string;
+  cycle_number: number;
+  status: 'planned' | 'running' | 'completed';
+  start_date: string;
+  end_date: string | null;
+  draw_seed: string | null;
+  drawn_at: string | null;
+  rounds_count: number;
+  settled_rounds: number;
+}
+
 export const ROUND_STATUS_LABELS: Record<RoundStatus, string> = {
   scheduled: 'Planifié',
   open: 'Ouvert',
@@ -221,6 +233,20 @@ export const groupsApi = {
       `/groups/${id}/launch`,
       { method: 'POST' },
     ),
+  cycles: (id: string) => apiFetch<GroupCycle[]>(`/groups/${id}/cycles`),
+  closeCycle: (id: string) =>
+    apiFetch<{ message: string; cycle: GroupCycle; open_debts: number; next_cycle_number: number }>(
+      `/groups/${id}/cycles/close`,
+      { method: 'POST' },
+    ),
+  openNextCycle: (id: string, payload: { start_date?: string; redraw?: boolean } = {}) =>
+    apiFetch<{
+      message: string;
+      cycle: GroupCycle;
+      expected_amount: number;
+      order: (GroupMember & { position: number })[];
+      rounds: Round[];
+    }>(`/groups/${id}/cycles`, { method: 'POST', body: JSON.stringify(payload) }),
   addMember: (
     id: string,
     payload: { full_name: string; phone: string; email?: string; role: GroupRole },
