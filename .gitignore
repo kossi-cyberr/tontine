@@ -3,6 +3,8 @@ dist/
 .next/
 out/
 coverage/
+apps/web/test-results/
+apps/web/playwright-report/
 *.tsbuildinfo
 
 .env
