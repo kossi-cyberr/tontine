@@ -23,7 +23,7 @@ export type RegisterInput = z.infer<typeof registerSchema>;
 
 export const verifyOtpSchema = z.object({
   target: z.string().trim().min(3).max(190),
-  purpose: z.enum(['register', 'login', 'reset', 'payout_account', 'payout_approval']),
+  purpose: z.enum(['login', 'reset', 'payout_account', 'payout_approval']),
   code: z
     .string()
     .length(6)

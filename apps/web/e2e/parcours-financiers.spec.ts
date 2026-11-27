@@ -1,7 +1,6 @@
 import { expect, test } from '@playwright/test';
 import {
   API_URL,
-  OTP_CODE,
   PASSWORD,
   confirmMockPayment,
   createLaunchedGroup,
@@ -11,7 +10,7 @@ import {
 } from './helpers';
 
 test.describe('Parcours financiers de la tontine', () => {
-  test('inscription, vérification OTP puis connexion', async ({ page }) => {
+  test('inscription immédiate puis accès au profil', async ({ page }) => {
     const phone = uniquePhone();
 
     await page.goto('/inscription');
@@ -19,17 +18,6 @@ test.describe('Parcours financiers de la tontine', () => {
     await page.getByLabel('Téléphone').fill(phone);
     await page.getByLabel('Mot de passe').fill(PASSWORD);
     await page.getByRole('button', { name: 'Créer mon compte' }).click();
-
-    await expect(page).toHaveURL(/\/verification\?target=/);
-
-    await page.getByLabel('Code de vérification').fill(OTP_CODE);
-    await page.getByRole('button', { name: 'Valider mon compte' }).click();
-
-    await expect(page).toHaveURL(/\/connexion\?activated=1/);
-
-    await page.getByLabel('Téléphone ou email').fill(phone);
-    await page.getByLabel('Mot de passe').fill(PASSWORD);
-    await page.getByRole('button', { name: 'Se connecter' }).click();
 
     await expect(page).toHaveURL(/\/profil/);
     const accessToken = await page.evaluate(() => localStorage.getItem('tontine.access_token'));

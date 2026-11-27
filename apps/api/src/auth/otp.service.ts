@@ -5,7 +5,6 @@ import { PrismaService } from '../prisma/prisma.service';
 import { hashCode, safeEqual } from '../common/crypto.util';
 
 export const OTP_PURPOSES = [
-  'register',
   'login',
   'reset',
   'activate',
@@ -16,7 +15,6 @@ export type OtpPurpose = (typeof OTP_PURPOSES)[number];
 
 const MAX_ATTEMPTS = 5;
 const OTP_TTL_MINUTES: Record<string, number> = {
-  register: 10,
   login: 10,
   reset: 10,
   payout_account: 10,

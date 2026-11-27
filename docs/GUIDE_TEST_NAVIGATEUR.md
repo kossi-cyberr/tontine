@@ -24,8 +24,9 @@ Le groupe démo est actuellement en statut **recrutement**, sans tour. Ses 10 me
 de passage existent déjà. Le premier tour doit être lancé (parcours 3), puis ouvert par le job
 automatique (toutes les 15 minutes) ou par la commande de recette rapide du parcours 3.
 
-> Les SMS sont simulés : les codes OTP et messages apparaissent dans les logs de l'API. En
-> développement, un code OTP fixe peut aussi être affiché sur l'écran de vérification.
+> L'inscription est immédiate : le compte est actif dès la validation du formulaire, sans OTP.
+> Les SMS restent simulés pour la réinitialisation du mot de passe et les validations financières :
+> les codes OTP et messages apparaissent dans les logs de l'API.
 
 ### Vérification de départ
 

@@ -44,57 +44,75 @@ describe('Authentification (e2e)', () => {
       .post('/auth/register')
       .send({ full_name: 'Test Auth', phone: target, password: PASSWORD, ...overrides })
       .expect(201);
-    expect(response.body.otp_required).toBe(true);
+    expect(response.body.access_token).toBeTruthy();
+    expect(response.body.refresh_token).toBeTruthy();
     return target;
   }
 
   async function activeUser() {
-    const target = await registerUser();
-    await api.post('/auth/verify-otp').send({ target, purpose: 'register', code: OTP }).expect(200);
-    return target;
+    return registerUser();
   }
 
-  it('inscrit puis active un compte avec l’OTP', async () => {
+  it('inscrit un compte actif sans OTP et ouvre une session', async () => {
     const target = await activeUser();
     const user = await prisma.users.findUniqueOrThrow({ where: { phone: target } });
     expect(user.status).toBe('active');
-    expect(user.phone_verified_at).not.toBeNull();
+
+    await api.post('/auth/login').send({ identifier: target, password: PASSWORD }).expect(200);
   });
 
-  it('refuse un OTP expiré', async () => {
+  it('refuse un numéro déjà inscrit', async () => {
     const target = await registerUser();
+    const response = await api
+      .post('/auth/register')
+      .send({ full_name: 'Doublon', phone: target, password: PASSWORD })
+      .expect(409);
+    expect(response.body.code).toBe('PHONE_TAKEN');
+  });
+
+  it('refuse un OTP de réinitialisation expiré', async () => {
+    const target = await activeUser();
+    await api.post('/auth/forgot-password').send({ identifier: target }).expect(202);
     await prisma.otp_codes.updateMany({
-      where: { target, purpose: 'register' },
+      where: { target, purpose: 'reset' },
       data: { expires_at: new Date(Date.now() - 1000) },
     });
 
     const response = await api
-      .post('/auth/verify-otp')
-      .send({ target, purpose: 'register', code: OTP })
+      .post('/auth/reset-password')
+      .send({ identifier: target, code: OTP, new_password: 'NouveauPass123' })
       .expect(400);
     expect(response.body.code).toBe('OTP_EXPIRED');
   });
 
-  it('refuse la réutilisation d’un OTP', async () => {
+  it('refuse la réutilisation d’un OTP de réinitialisation', async () => {
     const target = await activeUser();
+    await api.post('/auth/forgot-password').send({ identifier: target }).expect(202);
+    await api
+      .post('/auth/reset-password')
+      .send({ identifier: target, code: OTP, new_password: 'NouveauPass123' })
+      .expect(200);
+
     const response = await api
-      .post('/auth/verify-otp')
-      .send({ target, purpose: 'register', code: OTP })
+      .post('/auth/reset-password')
+      .send({ identifier: target, code: OTP, new_password: 'AutrePass123' })
       .expect(400);
     expect(['OTP_ALREADY_USED', 'OTP_EXPIRED']).toContain(response.body.code);
   });
 
-  it('bloque après 5 tentatives sur un OTP', async () => {
-    const target = await registerUser();
+  it('bloque après 5 tentatives sur un OTP de réinitialisation', async () => {
+    const target = await activeUser();
+    await api.post('/auth/forgot-password').send({ identifier: target }).expect(202);
+
     for (let i = 0; i < 5; i += 1) {
       await api
-        .post('/auth/verify-otp')
-        .send({ target, purpose: 'register', code: '111111' })
+        .post('/auth/reset-password')
+        .send({ identifier: target, code: '111111', new_password: 'NouveauPass123' })
         .expect(400);
     }
     const response = await api
-      .post('/auth/verify-otp')
-      .send({ target, purpose: 'register', code: '111111' })
+      .post('/auth/reset-password')
+      .send({ identifier: target, code: '111111', new_password: 'NouveauPass123' })
       .expect(429);
     expect(response.body.code).toBe('OTP_TOO_MANY_ATTEMPTS');
   });

@@ -31,9 +31,15 @@ export class AuthController {
   @Public()
   @Post('auth/register')
   @RateLimit(30, 60_000)
-  @ApiOperation({ summary: 'Inscription avec envoi d’un OTP SMS' })
-  register(@Body(new ZodValidationPipe(registerSchema)) body: RegisterInput) {
-    return this.auth.register(body);
+  @ApiOperation({ summary: 'Inscription immédiate par téléphone et mot de passe' })
+  register(
+    @Body(new ZodValidationPipe(registerSchema)) body: RegisterInput,
+    @Req() request: Request,
+  ) {
+    return this.auth.register(body, {
+      userAgent: request.headers['user-agent'],
+      ip: request.ip,
+    });
   }
 
   @Public()
@@ -45,7 +51,7 @@ export class AuthController {
     @Body(new ZodValidationPipe(verifyOtpSchema))
     body: {
       target: string;
-      purpose: 'register' | 'reset' | 'payout_account';
+      purpose: 'reset' | 'payout_account';
       code: string;
     },
   ) {

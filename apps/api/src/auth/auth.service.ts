@@ -50,7 +50,10 @@ export class AuthService {
     return value.startsWith('+') ? value.replace(/\s+/g, '') : value.toLowerCase();
   }
 
-  async register(input: RegisterInput): Promise<{ message: string; otp_required: true }> {
+  async register(
+    input: RegisterInput,
+    context: TokenContext = {},
+  ): Promise<TokenPair & { message: string }> {
     const existing = await this.prisma.users.findFirst({
       where: {
         OR: [{ phone: input.phone }, ...(input.email ? [{ email: input.email }] : [])],
@@ -74,51 +77,17 @@ export class AuthService {
         phone: input.phone,
         email: input.email ?? null,
         password_hash: await this.hashPassword(input.password),
-        status: 'pending',
+        status: 'active',
       },
-      select: { id: true, phone: true },
+      select: { id: true, phone: true, platform_role: true },
     });
 
-    const code = await this.otp.issue({
-      userId: user.id,
-      target: user.phone,
-      purpose: 'register',
-    });
-    await this.sms.send(
-      user.phone,
-      `Tontine : votre code de vérification est ${code}. Il expire dans 10 minutes.`,
-    );
-
-    return {
-      message: 'Compte créé. Saisissez le code reçu par SMS pour l’activer.',
-      otp_required: true,
-    };
+    const tokens = await this.tokens.issuePair(user, context);
+    return { ...tokens, message: 'Compte créé. Vous êtes connecté.' };
   }
 
   async verifyOtp(target: string, purpose: OtpPurpose, code: string): Promise<{ message: string }> {
     const normalized = this.normalizeIdentifier(target);
-
-    if (purpose === 'register') {
-      const user = await this.prisma.users.findFirst({
-        where: { OR: [{ phone: normalized }, { email: normalized }] },
-        select: { id: true, phone: true, status: true },
-      });
-
-      if (!user) {
-        throw new BadRequestException({ code: 'OTP_INVALID', message: 'Code incorrect.' });
-      }
-
-      await this.otp.consume(user.phone, 'register', code);
-      await this.prisma.users.update({
-        where: { id: user.id },
-        data: {
-          status: 'active',
-          phone_verified_at: new Date(),
-        },
-      });
-
-      return { message: 'Compte activé. Vous pouvez vous connecter.' };
-    }
 
     if (purpose === 'reset' || purpose === 'payout_account' || purpose === 'payout_approval') {
       await this.otp.check(normalized, purpose, code);

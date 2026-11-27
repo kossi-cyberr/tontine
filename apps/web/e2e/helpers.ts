@@ -3,7 +3,6 @@ import type { APIRequestContext, Page } from '@playwright/test';
 import { PrismaClient } from '@prisma/client';
 
 export const API_URL = process.env.E2E_API_URL ?? 'http://localhost:3051';
-export const OTP_CODE = process.env.E2E_OTP_CODE ?? '123456';
 export const PASSWORD = 'Tontine2026!';
 
 export interface TestUser {
@@ -32,27 +31,13 @@ export async function registerUser(
 ): Promise<TestUser> {
   const phone = uniquePhone();
 
-  await ensureOk(
+  const registered = await ensureOk(
     await request.post(`${API_URL}/v1/auth/register`, {
       data: { full_name: fullName, phone, password: PASSWORD },
     }),
     `Inscription ${phone}`,
   );
-
-  await ensureOk(
-    await request.post(`${API_URL}/v1/auth/verify-otp`, {
-      data: { target: phone, purpose: 'register', code: OTP_CODE },
-    }),
-    `Vérification OTP ${phone}`,
-  );
-
-  const login = await ensureOk(
-    await request.post(`${API_URL}/v1/auth/login`, {
-      data: { identifier: phone, password: PASSWORD },
-    }),
-    `Connexion ${phone}`,
-  );
-  const tokens = (await login.json()) as { access_token: string; refresh_token: string };
+  const tokens = (await registered.json()) as { access_token: string; refresh_token: string };
 
   return { phone, ...tokens };
 }

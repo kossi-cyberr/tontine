@@ -55,19 +55,19 @@ db/seed.ts            Données de démonstration
 
 ## Authentification (Phase 1)
 
-| Route                             | Rôle                                                      |
-| --------------------------------- | --------------------------------------------------------- |
-| `POST /v1/auth/register`          | inscription + OTP SMS (10 min)                            |
-| `POST /v1/auth/verify-otp`        | activation du compte, vérification OTP                    |
-| `POST /v1/auth/login`             | connexion téléphone/email, TOTP si activé                 |
-| `POST /v1/auth/refresh`           | rotation du refresh token                                 |
-| `POST /v1/auth/logout`            | révocation de session                                     |
-| `POST /v1/auth/forgot-password`   | OTP de réinitialisation (réponse identique compte ou non) |
-| `POST /v1/auth/reset-password`    | nouveau mot de passe, sessions révoquées                  |
-| `POST /v1/auth/2fa/enable`        | secret TOTP + URL otpauth                                 |
-| `GET/PATCH /v1/me`                | profil                                                    |
-| `POST /v1/me/kyc`                 | pièce d'identité chiffrée (JPEG/PNG/PDF, 5 Mo)            |
-| `GET/POST /v1/me/payout-accounts` | comptes Mobile Money (OTP, actif après 24 h)              |
+| Route                             | Rôle                                                              |
+| --------------------------------- | ----------------------------------------------------------------- |
+| `POST /v1/auth/register`          | inscription immédiate (téléphone + mot de passe), session ouverte |
+| `POST /v1/auth/verify-otp`        | vérification OTP (réinitialisation, comptes de réception)         |
+| `POST /v1/auth/login`             | connexion téléphone/email, TOTP si activé                         |
+| `POST /v1/auth/refresh`           | rotation du refresh token                                         |
+| `POST /v1/auth/logout`            | révocation de session                                             |
+| `POST /v1/auth/forgot-password`   | OTP de réinitialisation (réponse identique compte ou non)         |
+| `POST /v1/auth/reset-password`    | nouveau mot de passe, sessions révoquées                          |
+| `POST /v1/auth/2fa/enable`        | secret TOTP + URL otpauth                                         |
+| `GET/PATCH /v1/me`                | profil                                                            |
+| `POST /v1/me/kyc`                 | pièce d'identité chiffrée (JPEG/PNG/PDF, 5 Mo)                    |
+| `GET/POST /v1/me/payout-accounts` | comptes Mobile Money (OTP, actif après 24 h)                      |
 
 ## Groupes et membres (Phase 2)
 
@@ -283,7 +283,7 @@ Le test `apps/api/test/ledger.spec.ts` le vérifie (inscription acceptée, mutat
 
 Phase 0 (fondations) terminée : monorepo, Docker, santé, migrations, seed, test d'immuabilité, CI.
 
-Phase 1 (authentification) terminée : inscription OTP, connexion, activation, mot de passe oublié,
+Phase 1 (authentification) terminée : inscription immédiate sans OTP, connexion, activation, mot de passe oublié,
 2FA TOTP, KYC chiffré, comptes de réception avec OTP et délai de 24 h, guards globaux, pages web
 dédiées.
 
